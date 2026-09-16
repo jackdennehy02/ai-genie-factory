@@ -20,22 +20,26 @@ All applications must:
 - Data access by runtime: Notebooks and DLT use spark.table(); Databricks Apps use databricks-sdk WorkspaceClient + Statement Execution API (no Spark session available in Apps runtime)
 - Apply central KPI definitions from the semantic layer — never recalculate a KPI that exists in the platform
 - Respect Unity Catalog RBAC/ACLs — never bypass access controls or use service principals to elevate permissions
+- Use centralised Snap Analytics brand tokens from THEMING module — never define per-app colour palettes
+- Include the brand logo from brand/ in every app header (copy to app /assets/ folder)
 
 Architecture layers:
 
 - Data layer: Unity Catalog three-part names, no transformation logic — spark.table() in Notebooks/DLT; WorkspaceClient Statement Execution API in Databricks Apps
 - Logic layer: aggregations, transformations, business rules — no SQL, no UI dependencies
-- UI layer: Plotly charts using approved patterns, pandas conversion happens here only
+- UI layer: Plotly charts using approved patterns, pandas conversion happens here only, brand tokens from THEMING only
 
 Forbidden:
 
 - Business logic in UI layer
 - SQL outside the data access module
-- Hardcoded values (catalog names, table names, thresholds)
+- Hardcoded values (catalog names, table names, thresholds, colour hex codes)
 - Reading from Bronze or Silver tables in UI-facing apps
 - Redefining KPIs that exist in the semantic layer
 - Creating custom components that duplicate ai-dev-kit patterns
 - Bypassing Unity Catalog governance
+- Per-app colour definitions — use centralised THEMING tokens only
+- Apps without the Snap Analytics logo in the header
 
 ---
 
@@ -49,15 +53,24 @@ Runtime:
 Language:
 - Python
 
-UI:
-- Plotly (plotly.express) for all charts and visualizations
+App Frameworks:
+- Dash (dash + dash-bootstrap-components) for interactive web apps
+- Plotly (plotly.express, plotly.graph_objects) for all charts and visualizations
+- sqlparse for SQL formatting in chat interfaces
 
 Data Access:
 - Notebooks and DLT: spark.table() for all reads
 - Databricks Apps: databricks-sdk WorkspaceClient + Statement Execution API (no Spark session in Apps runtime)
+- Databricks Apps (alternative): databricks-sql-connector for direct SQL warehouse access via databricks.sql.connect()
 - Unity Catalog three-part table names: catalog.schema.table in both runtimes
 - Gold layer tables only in UI-facing apps
 - Delta Lake as the table format
+
+LLM Integration:
+- Foundation Model API via requests.post to /serving-endpoints/{endpoint}/invocations
+- Auth: databricks-sdk Config().authenticate() for headers (OAuth in Apps runtime)
+- Endpoint naming: use environment variables, never hardcode — endpoints deprecate without warning
+- SQL generation: always route intent first (conversation vs data), enforce SELECT-only guardrails
 
 Data Architecture:
 - Medallion: Bronze (raw ingestion) → Silver (validated, SCD Type 2) → Gold (aggregated, app-ready)
@@ -71,6 +84,40 @@ Governance:
 
 Libraries:
 - ai-dev-kit: https://github.com/databricks/ai-dev-kit
+- databricks-sdk, databricks-sql-connector, dash, dash-bootstrap-components, plotly, pandas, requests, sqlparse
+
+---
+
+## THEMING
+
+All applications must use the centralised Snap Analytics brand tokens.
+Never define per-app color palettes. Full Python dicts are in @ui-ux-patterns skill.
+
+Brand: Snap Analytics
+Design language: Minimal, high contrast, generous whitespace, rounded corners.
+Default mode: snap-dark. Light variant: snap-light (for content-heavy views).
+
+Primary accent: #E8871E (orange). Secondary: #4A90D9 (blue), #E84C88 (pink).
+Dark background: #0D0D0D. Dark surface: #1A1A1A. Light background: #F0F0F0.
+Chart palette order: orange, blue, pink, green, amber, purple, teal.
+Font: Inter (system fallback). Headings 700, body 400 at 0.93rem.
+Radius: cards 16px, buttons 8px, chat bubbles 18px, pills 24px.
+
+Logo (brand/ folder in repo root):
+- snap-dark: brand/logo-full-colour-whitetext.svg (coloured icon + white text)
+- snap-light: brand/logo-full-colour.svg (coloured icon + black text)
+- solid backgrounds: brand/logo-full-white.svg (all-white)
+PNG fallbacks alongside each. Copy to app /assets/logo.svg at build time.
+Dash: html.Img(src=app.get_asset_url("logo.svg"), style={"height": "32px"})
+Placement: top-left header, max 32px, alt="Snap Analytics"
+
+Rules:
+- Default to snap-dark unless APP.md specifies snap-light
+- Chart traces use CHART_PALETTE in order — never Plotly defaults
+- Plotly template: plotly_dark (snap-dark) or plotly_white (snap-light)
+- Plotly figure backgrounds must match COLORS["background"]
+- Never invent colours outside the token set — use semantic names from @ui-ux-patterns
+- Status colours (success/warning/danger/info) are functional — do not swap with brand colours
 
 ---
 
@@ -185,36 +232,6 @@ Log these events in logic.py:
 Log these events in app.py:
 - App start: logger.info("App starting")
 - Config loaded: logger.info(f"Config: {config}")
-
----
-
-## THEMING
-
-All applications must use the centralised Snap Analytics brand tokens.
-Never define per-app color palettes. Full Python dicts are in @ui-ux-patterns skill.
-
-Brand: Snap Analytics
-Design language: Minimal, high contrast, generous whitespace, rounded corners.
-Default mode: snap-dark. Light variant: snap-light (for content-heavy views).
-
-Primary accent: #E8871E (orange). Secondary: #4A90D9 (blue), #E84C88 (pink).
-Dark background: #0D0D0D. Dark surface: #1A1A1A. Light background: #F0F0F0.
-Chart palette order: orange, blue, pink, green, amber, purple, teal.
-Font: Inter (system fallback). Headings 700, body 400 at 0.93rem.
-Radius: cards 16px, buttons 8px, chat bubbles 18px, pills 24px.
-
-Logo:
-- Place logo.svg in /assets/ folder inside app directory
-- Dash: html.Img(src=app.get_asset_url("logo.svg"), style={"height": "32px"})
-- Header: top-left, max height 32px, vertically centred, alt text required
-
-Rules:
-- Default to snap-dark unless APP.md specifies snap-light
-- Chart traces use CHART_PALETTE in order — never Plotly defaults
-- Plotly template: plotly_dark (snap-dark) or plotly_white (snap-light)
-- Plotly figure backgrounds must match COLORS["background"]
-- Never invent colours outside the token set — use semantic names from @ui-ux-patterns
-- Status colours (success/warning/danger/info) are functional — do not swap with brand colours
 
 ---
 

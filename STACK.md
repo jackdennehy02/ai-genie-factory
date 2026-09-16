@@ -8,15 +8,24 @@ Runtime:
 Language:
 - Python
 
-UI:
-- Plotly (plotly.express) for all charts and visualizations
+App Frameworks:
+- Dash (dash + dash-bootstrap-components) for interactive web apps
+- Plotly (plotly.express, plotly.graph_objects) for all charts and visualizations
+- sqlparse for SQL formatting in chat interfaces
 
 Data Access:
 - Notebooks and DLT: spark.table() for all reads
 - Databricks Apps: databricks-sdk WorkspaceClient + Statement Execution API (no Spark session in Apps runtime)
+- Databricks Apps (alternative): databricks-sql-connector for direct SQL warehouse access via databricks.sql.connect()
 - Unity Catalog three-part table names: catalog.schema.table in both runtimes
 - Gold layer tables only in UI-facing apps
 - Delta Lake as the table format
+
+LLM Integration:
+- Foundation Model API via requests.post to /serving-endpoints/{endpoint}/invocations
+- Auth: databricks-sdk Config().authenticate() for headers (OAuth in Apps runtime)
+- Endpoint naming: use environment variables, never hardcode — endpoints deprecate without warning
+- SQL generation: always route intent first (conversation vs data), enforce SELECT-only guardrails
 
 Data Architecture:
 - Medallion: Bronze (raw ingestion) → Silver (validated, SCD Type 2) → Gold (aggregated, app-ready)
@@ -30,3 +39,4 @@ Governance:
 
 Libraries:
 - ai-dev-kit: https://github.com/databricks/ai-dev-kit
+- databricks-sdk, databricks-sql-connector, dash, dash-bootstrap-components, plotly, pandas, requests, sqlparse

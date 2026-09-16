@@ -30,9 +30,9 @@ WARN_AT = int(CHAR_LIMIT * 0.60)  # warn at 60% — lean target
 SOURCES = [
     ("GLOBAL RULES",   ROOT / "GLOBAL_RULES.md"),
     ("STACK",          ROOT / "STACK.md"),
+    ("THEMING",        ROOT / "THEMING.md"),
     ("ERROR HANDLING", ROOT / "modules" / "error_handling.md"),
     ("LOGGING",        ROOT / "modules" / "logging.md"),
-    ("THEMING",        ROOT / "modules" / "theming.md"),
     ("AI CHATBOT",     ROOT / "modules" / "ai_chatbot.md"),
     ("SKILL INDEX",    ROOT / "modules" / "skill_index.md"),
 ]

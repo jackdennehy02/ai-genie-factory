@@ -1,10 +1,16 @@
 #!/usr/bin/env bash
-# Deploy AI Genie Factory instructions and Agent Skills to Databricks Genie Code.
+# Deploy AI Genie Factory to Databricks Genie Code.
+#
+# Deploys:
+#   AGENTS.md          → .assistant_instructions.md  (always-on constraints)
+#   skills/*/SKILL.md  → .assistant/skills/<name>/    (on-demand skills)
+#   brand/*            → .assistant/brand/            (logo assets)
+#   apps/*/APP.md      → .assistant/apps/<name>/      (app spec references)
 #
 # Workspace-wide (workspace admin):
 #   ./deploy.sh --workspace --profile DEFAULT
 #
-# Personal (the user is resolved from the authenticated CLI identity):
+# Personal (resolved from CLI identity):
 #   ./deploy.sh --profile DEFAULT
 #   ./deploy.sh --profile DEFAULT --user user@example.com
 
@@ -111,15 +117,24 @@ upload_raw() {
     --overwrite
 }
 
+BRAND_TARGET="${BASE}/brand"
+APPS_TARGET="${BASE}/apps"
+
 echo "AI Genie Factory — Databricks deployment"
 echo "Profile: ${PROFILE}"
 echo "Scope: ${SCOPE}"
 echo "Instructions: ${INSTRUCTIONS_TARGET}"
 echo "Skills: ${SKILLS_TARGET}/<name>/SKILL.md"
+echo "Brand: ${BRAND_TARGET}/"
+echo "Apps: ${APPS_TARGET}/<name>/APP.md"
+echo ""
 
+# --- Instructions ---
 run "${DBX[@]}" workspace mkdirs "$BASE"
 upload_raw "AGENTS.md" "$INSTRUCTIONS_TARGET"
+echo "  Uploaded AGENTS.md"
 
+# --- Skills ---
 run "${DBX[@]}" workspace mkdirs "$SKILLS_TARGET"
 for skill_file in skills/*/SKILL.md; do
   [[ -f "$skill_file" ]] || continue
@@ -127,8 +142,46 @@ for skill_file in skills/*/SKILL.md; do
   remote_dir="${SKILLS_TARGET}/${skill_name}"
   run "${DBX[@]}" workspace mkdirs "$remote_dir"
   upload_raw "$skill_file" "${remote_dir}/SKILL.md"
+  echo "  Uploaded skill: ${skill_name}"
 done
 
+# --- Brand assets (logos, etc.) ---
+if [[ -d brand ]]; then
+  run "${DBX[@]}" workspace mkdirs "$BRAND_TARGET"
+  brand_count=0
+  for brand_file in brand/*; do
+    [[ -f "$brand_file" ]] || continue
+    filename="$(basename "$brand_file")"
+    upload_raw "$brand_file" "${BRAND_TARGET}/${filename}"
+    brand_count=$((brand_count + 1))
+  done
+  echo "  Uploaded ${brand_count} brand asset(s)"
+else
+  echo "  Skipped brand/ (not found)"
+fi
+
+# --- App specs (APP.md per app) ---
+if [[ -d apps ]]; then
+  run "${DBX[@]}" workspace mkdirs "$APPS_TARGET"
+  app_count=0
+  for app_dir in apps/*/; do
+    [[ -d "$app_dir" ]] || continue
+    app_name="$(basename "$app_dir")"
+    remote_app_dir="${APPS_TARGET}/${app_name}"
+    run "${DBX[@]}" workspace mkdirs "$remote_app_dir"
+    for app_file in "${app_dir}"*.md; do
+      [[ -f "$app_file" ]] || continue
+      filename="$(basename "$app_file")"
+      upload_raw "$app_file" "${remote_app_dir}/${filename}"
+    done
+    app_count=$((app_count + 1))
+  done
+  echo "  Uploaded ${app_count} app spec(s)"
+else
+  echo "  Skipped apps/ (not found)"
+fi
+
+echo ""
 echo "Deployment complete. Start a new Genie Code chat to load changed skills."
 if [[ "$SCOPE" == "workspace" ]]; then
   echo "Admin follow-up: restrict write access on /Workspace/.assistant and the workspace instructions file."
