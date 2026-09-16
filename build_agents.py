@@ -32,6 +32,8 @@ SOURCES = [
     ("STACK",          ROOT / "STACK.md"),
     ("ERROR HANDLING", ROOT / "modules" / "error_handling.md"),
     ("LOGGING",        ROOT / "modules" / "logging.md"),
+    ("THEMING",        ROOT / "modules" / "theming.md"),
+    ("AI CHATBOT",     ROOT / "modules" / "ai_chatbot.md"),
     ("SKILL INDEX",    ROOT / "modules" / "skill_index.md"),
 ]
 

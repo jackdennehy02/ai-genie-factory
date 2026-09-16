@@ -188,6 +188,54 @@ Log these events in app.py:
 
 ---
 
+## THEMING
+
+All applications must use the centralised Snap Analytics brand tokens.
+Never define per-app color palettes. Full Python dicts are in @ui-ux-patterns skill.
+
+Brand: Snap Analytics
+Design language: Minimal, high contrast, generous whitespace, rounded corners.
+Default mode: snap-dark. Light variant: snap-light (for content-heavy views).
+
+Primary accent: #E8871E (orange). Secondary: #4A90D9 (blue), #E84C88 (pink).
+Dark background: #0D0D0D. Dark surface: #1A1A1A. Light background: #F0F0F0.
+Chart palette order: orange, blue, pink, green, amber, purple, teal.
+Font: Inter (system fallback). Headings 700, body 400 at 0.93rem.
+Radius: cards 16px, buttons 8px, chat bubbles 18px, pills 24px.
+
+Logo:
+- Place logo.svg in /assets/ folder inside app directory
+- Dash: html.Img(src=app.get_asset_url("logo.svg"), style={"height": "32px"})
+- Header: top-left, max height 32px, vertically centred, alt text required
+
+Rules:
+- Default to snap-dark unless APP.md specifies snap-light
+- Chart traces use CHART_PALETTE in order — never Plotly defaults
+- Plotly template: plotly_dark (snap-dark) or plotly_white (snap-light)
+- Plotly figure backgrounds must match COLORS["background"]
+- Never invent colours outside the token set — use semantic names from @ui-ux-patterns
+- Status colours (success/warning/danger/info) are functional — do not swap with brand colours
+
+---
+
+## AI CHATBOT
+
+All applications with an LLM-powered chat interface must follow these guardrails.
+Code patterns and implementation details are in @ai-chatbot skill.
+
+Rules:
+- Every LLM system prompt must include: "Never use emojis, emoji characters, or unicode symbols. Use plain text only."
+- Every text-to-SQL flow must route intent first — classify as conversation vs data question before generating SQL
+- Generated SQL must pass through enforce_select_only before execution (SELECT/WITH only, single statement, table validation, auto-LIMIT)
+- All string interpolation into SQL must use sql_literal() escaping — never raw f-strings with user input
+- LLM responses must never surface raw tracebacks — catch at the call boundary, log, show user-friendly error
+- Foundation Model endpoints must be tested before hardcoding — deprecated endpoints fail silently with 400
+- LLM call timeouts must be explicit (90s recommended)
+- Writeback (UPDATE/INSERT) must be separated from the chat LLM flow with its own guardrails
+- Never allow the chat LLM to generate UPDATE/INSERT — only dedicated writeback functions
+
+---
+
 ## SKILL INDEX
 
 Genie Code Agent Mode auto-loads a skill when a request matches its description below —
@@ -201,6 +249,11 @@ exists so routing to the right skill stays reliable even without an explicit @me
 - @databricks-dashboard-colors — dashboard theme, dark/light mode, Lakeview color palette
 - @dlt-pipeline — Bronze/Silver/Gold, DLT, Auto Loader, CDC, streaming pipelines
 - @testing-scaffold — writing or reviewing tests for an App
+- @ai-chatbot — LLM chat interface, text-to-SQL, intent routing, Foundation Model API, SQL guardrails, maps with route lines, writeback with auto-refresh, chat UX patterns
 
 Dashboards always need both @databricks-dashboard and @databricks-dashboard-colors together —
 one without the other produces a Lakeview dashboard with an unstyled or inconsistent theme.
+
+Chatbot apps always need @ai-chatbot paired with @databricks-app and @data-access —
+the chatbot skill handles LLM integration and chat UX; the app skill handles architecture;
+the data-access skill handles Unity Catalog reads.
