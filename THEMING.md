@@ -7,18 +7,20 @@ Brand: Snap Analytics
 Design language: Minimal, high contrast, generous whitespace, rounded corners.
 Default mode: snap-dark. Light variant: snap-light (for content-heavy views).
 
-Primary accent: #E8871E (orange). Secondary: #4A90D9 (blue), #E84C88 (pink).
+Primary accent: #4A90D9 (blue). Secondary: #E8871E (orange), #E84C88 (pink).
 Dark background: #0D0D0D. Dark surface: #1A1A1A. Light background: #F0F0F0.
-Chart palette order: orange, blue, pink, green, amber, purple, teal.
+Chart palette order: blue, orange, pink, green, amber, purple, teal.
 Font: Inter (system fallback). Headings 700, body 400 at 0.93rem.
 Radius: cards 16px, buttons 8px, chat bubbles 18px, pills 24px.
 
 Logo (brand/ folder in repo root):
-- snap-dark: brand/logo-full-colour-whitetext.svg (coloured icon + white text)
-- snap-light: brand/logo-full-colour.svg (coloured icon + black text)
-- solid backgrounds: brand/logo-full-white.svg (all-white)
-PNG fallbacks alongside each. Copy to app /assets/logo.svg at build time.
-Dash: html.Img(src=app.get_asset_url("logo.svg"), style={"height": "32px"})
+- snap-dark: brand/logo-full-colour-whitetext.png (coloured icon + white text)
+- snap-light: brand/logo-full-colour.png (coloured icon + black text)
+- solid backgrounds: brand/logo-full-white.png (all-white)
+Always use PNG — SVG files are large and slow to write to workspace assets.
+SVG originals exist alongside each PNG for print/export use only.
+Copy to app /assets/logo.png at build time (use shutil.copy2 or direct file copy, never editAsset for binary files).
+Dash: html.Img(src="/assets/logo.png", alt="Snap Analytics", style={"height": "32px"})
 Placement: top-left header, max 32px, alt="Snap Analytics"
 
 Rules:

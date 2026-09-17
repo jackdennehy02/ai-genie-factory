@@ -15,36 +15,59 @@ Apply when building a Databricks App with an LLM-powered chat interface.
 The always-on module (`modules/ai_chatbot.md`) defines the guardrails;
 this skill provides the implementation patterns.
 
-## Intent routing
+## Unified system prompt (analyst + query generator)
 
-Never force SQL generation for every user message. The first LLM call must classify intent
-and return structured JSON. The system prompt must offer two response formats:
+One system prompt, one persona, one conversation. The LLM is an analyst who CAN
+query data — not a query generator with a separate analyst bolted on. The JSON
+format includes `analysis` for SQL results so intent classification and analytical
+thinking happen in a single call.
 
 ```python
-system_prompt = """
-You are a fleet operations AI assistant. Return strict JSON only.
-Choose ONE format:
+SYSTEM_PROMPT = f"""You are a sharp fleet operations analyst with access to a shipments database.
+You can query data AND reason about it in a single response.
 
-1. Data questions: {"type": "sql", "sql": "<SELECT query>", "explanation": "<intent>"}
-2. Conversation:   {"type": "conversation", "response": "<friendly reply>"}
+Return strict JSON in ONE of these formats:
 
-Formatting rules (ALL responses):
-- Never use emojis, emoji characters, or unicode symbols
-- Use plain text only
+1. When you need to query data:
+{{{{
+  "type": "sql",
+  "sql": "<SELECT query>",
+  "analysis": "<markdown analysis of what you expect to find and why>"
+}}}}
 
-SQL rules (only when type is "sql"):
-- Single SELECT only, full table name, respect provided schema
+2. When answering from conversation context, prior results, or general knowledge:
+{{{{
+  "type": "conversation",
+  "response": "<markdown response>"
+}}}}
+
+You are an ANALYST, not a query generator. When results come back, you will be
+asked to analyse them. Scrutinise every value. Flag anomalies, data quality issues,
+entries that look like human commentary or don't fit the pattern. Be specific —
+reference exact values. Use markdown: **bold headers**, bullet points, and a
+**Recommended Actions** section when relevant.
+
+Rules:
+- Never use emojis or unicode symbols
+- SQL: SELECT only, full table name: {{CONFIG['table_name']}}
 - Never UPDATE/DELETE/INSERT/DROP/ALTER/TRUNCATE/MERGE/CREATE
-"""
+- Always LIMIT 100 unless user asks for a specific count
+- When the user asks a follow-up about data already shown, respond as conversation —
+  do NOT re-run the same query
+
+Schema:
+{{SCHEMA_DESCRIPTION}}"""
 ```
 
-In the orchestrator, branch on the response:
+In the orchestrator, branch on the response type:
 
 ```python
-sql_text, explanation, notes = generate_sql_from_question(question, ids)
-if sql_text is None:  # conversation
-    return {"answer": explanation, "sql": None, "rows": [], ...}
-# else: execute SQL, summarise, return full result
+llm_response = _call_llm(messages)
+if llm_response.get("type") == "sql":
+    # execute SQL, feed results back for analysis (see below)
+else:
+    answer = llm_response.get("response", "")
+    return {"answer": answer, "sql": None, "rows": [], "columns": []}
 ```
 
 ## Fuzzy ID resolution
@@ -291,9 +314,152 @@ requiring streaming, recommend FastAPI + React (AppKit) instead of Dash.
 The two-phase pattern (instant typing bubble then full response) is the practical
 ceiling for Dash.
 
-## Foundation Model endpoint testing
+## Conversation history with data context
 
-Endpoints deprecate without warning. Test at app startup or in deployment:
+Every LLM call must include full conversation history. Assistant messages must include
+actual SQL results (first 20 rows), not just "[returned N rows]". Without the data,
+the LLM cannot answer follow-ups.
+
+```python
+def _build_history_messages(history: list[dict]) -> list[dict]:
+    """Convert chat store into LLM messages with full data context."""
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    for msg in history:
+        if msg["role"] == "user":
+            messages.append({"role": "user", "content": msg["content"]})
+        else:
+            parts = [msg.get("content", "")]
+            if msg.get("sql"):
+                parts.append(f"\nSQL executed:\n{msg['sql']}")
+                rows = msg.get("rows", [])
+                if rows:
+                    preview = rows[:20]
+                    cols = list(preview[0].keys()) if preview else []
+                    lines = [" | ".join(cols)] + [
+                        " | ".join(str(r.get(c, "")) for c in cols) for r in preview
+                    ]
+                    parts.append(f"\nResults ({len(rows)} rows):\n" + "\n".join(lines))
+                    if len(rows) > 20:
+                        parts.append(f"... and {len(rows) - 20} more rows")
+            messages.append({"role": "assistant", "content": "\n".join(parts)})
+    return messages
+```
+
+## Single-conversation analysis (feed results back)
+
+After executing SQL, feed the results back into the SAME conversation and ask
+the LLM to analyse them. This keeps one system prompt, one persona, one context.
+The LLM knows WHY it queried and WHAT to look for because it's the same conversation.
+
+```python
+def _process_chat_question(question, df, history):
+    messages = _build_history_messages(history)
+    messages.append({"role": "user", "content": resolved_question})
+    llm_response = _call_llm(messages)  # Single call — classifies + generates SQL
+
+    if llm_response.get("type") == "sql":
+        # Execute SQL
+        safe_sql = _enforce_select_only(llm_response["sql"], table_name)
+        result_df, cols = execute_chat_sql(CONFIG, safe_sql)
+        rows = result_df.head(100).to_dict("records")
+
+        # Feed results back into the SAME conversation
+        # Show ALL rows up to 100 — never truncate small result sets
+        preview_limit = min(len(result_df), 100)
+        result_preview = result_df.head(preview_limit).to_string(index=False)
+        messages.append({"role": "assistant", "content": json.dumps(llm_response)})
+        messages.append({"role": "user", "content": (
+            f"The query returned {len(result_df)} rows:\n\n{result_preview}\n\n"
+            # No "...(and N more)" — the LLM will say "results were truncated"
+            "Answer my original question directly based on these results. "
+            "Be concise — lead with the answer, reference specific values. "
+            "Only flag anomalies if something genuinely stands out; don't force it. "
+            "Use markdown with **bold headers** and bullet points where helpful. "
+            "Use markdown in your response field. "
+            'Respond as: {"type": "conversation", "response": "<your markdown analysis>"}'
+        )})
+        analysis_response = _call_llm(messages)
+        analysis = analysis_response.get("response", "") or analysis_response.get("analysis", "")
+        if not analysis:
+            analysis = llm_response.get("analysis", "Query executed successfully.")
+
+        return {"answer": analysis, "sql": formatted_sql, "rows": rows, "columns": cols}
+    else:
+        return {"answer": llm_response.get("response", ""), "sql": None, "rows": [], "columns": []}
+```
+
+Why this works:
+- The analyst persona is set ONCE in SYSTEM_PROMPT and applies to everything.
+- Results are fed back as a user message in the same thread — no conflicting prompts.
+- Follow-ups work naturally because the LLM has the full history including data.
+- The analysis instruction says what to DO (examine values, flag anomalies) with formatting
+  as a lightweight suffix — not the other way around.
+
+## Claude content block format
+
+Claude Sonnet 5+, Opus 4+ return `content` as a list of typed blocks, not a
+plain string. This causes `AttributeError: 'list' object has no attribute 'strip'`
+if not handled. Always extract text blocks:
+
+```python
+def _extract_text(content) -> str:
+    """Extract text from Claude's content block format or plain string."""
+    if isinstance(content, list):
+        text_parts = [block["text"] for block in content if block.get("type") == "text"]
+        return "\n".join(text_parts)
+    return content
+```
+
+Call `_extract_text()` immediately after reading `response["choices"][0]["message"]["content"]`
+in every LLM call function.
+
+## LLM call pattern
+
+The `_call_llm` function must accept a full messages list (not a single question
+string). Never include `temperature` — Claude models reject it with 400.
+
+```python
+def _call_llm(messages: list[dict]) -> dict:
+    """Call serving endpoint with conversation history. Returns parsed JSON."""
+    try:
+        _client = WorkspaceClient()
+        host = _client.config.host
+        endpoint = CONFIG["serving_endpoint"]
+        url = f"{host}/serving-endpoints/{endpoint}/invocations"
+
+        headers = {"Content-Type": "application/json"}
+        headers.update(_client.config.authenticate())
+
+        payload = {"messages": messages, "max_tokens": 2048}
+        # Do NOT include temperature — Claude models reject it
+        resp = requests.post(url, headers=headers, json=payload, timeout=90)
+        resp.raise_for_status()
+        content = _extract_text(resp.json()["choices"][0]["message"]["content"])
+
+        content = content.strip()
+        if content.startswith("```"):
+            content = re.sub(r"^```[a-zA-Z]*\n?", "", content)
+            content = re.sub(r"\n?```$", "", content)
+        return json.loads(content)
+    except json.JSONDecodeError:
+        return {"type": "conversation", "response": content}
+    except Exception as e:
+        logger.error(f"LLM call failed: {e}")
+        return {"type": "conversation", "response": "I encountered an error. Please try again."}
+```
+
+There is no separate `_call_llm_analysis` function. The single `_call_llm` handles both
+JSON-parsed and free-text responses (free-text falls through the `JSONDecodeError` catch
+and becomes `{"type": "conversation", "response": content}`).
+
+## Foundation Model endpoint selection and testing
+
+Preferred model: `databricks-claude-sonnet-5` (or the highest available non-deprecated
+Claude Sonnet). Never default to Llama or Haiku for chat interfaces — they lack the
+analytical depth users expect from a data assistant.
+
+Endpoints deprecate without warning. Test at app startup or in deployment.
+Test must verify both the status code AND the response content shape:
 
 ```python
 resp = requests.post(
@@ -303,8 +469,20 @@ resp = requests.post(
     timeout=10,
 )
 if resp.status_code != 200:
-    logger.error(f"Endpoint {endpoint} returned {resp.status_code}")
+    logger.error(f"Endpoint {endpoint} returned {resp.status_code}: {resp.text[:200]}")
+else:
+    # Verify response shape — Claude returns list, others return string
+    content = resp.json()["choices"][0]["message"]["content"]
+    if isinstance(content, list):
+        logger.info(f"Endpoint {endpoint} returns content blocks (Claude format)")
+    else:
+        logger.info(f"Endpoint {endpoint} returns plain string")
 ```
+
+Known model-specific constraints:
+- Claude (all versions): does NOT support `temperature` parameter — omit entirely
+- Claude Sonnet 5+, Opus 4+: returns content as list of typed blocks, not string
+- Statement Execution API `wait_timeout`: must be 0 (disabled) or between 5s and 50s — values above 50s cause immediate 400
 
 ## Cross-filtering pattern
 
@@ -329,6 +507,41 @@ def update_filter_options(selected_truck, selected_shipment, _r, _s):
     )
 ```
 
+## Map loading state
+
+Maps (dcc.Graph) must have an initial empty figure with dark background and
+hidden axes to prevent a flash of default white axes while data loads:
+
+```python
+html.Div(
+    dcc.Loading(
+        dcc.Graph(
+            id="fleet-map",
+            config={"displayModeBar": False},
+            figure={
+                "data": [],
+                "layout": {
+                    "paper_bgcolor": COLORS["card"],
+                    "plot_bgcolor": COLORS["card"],
+                    "xaxis": {"visible": False},
+                    "yaxis": {"visible": False},
+                    "height": 620,
+                },
+            },
+        ),
+        type="dot",
+        color=COLORS["accent"],
+    ),
+    style={**CARD_STYLE, "padding": "0", "overflow": "hidden"},
+)
+```
+
+## Chat layout
+
+Chat thread container must be capped at `maxWidth: 800px` with `margin: 0 auto`
+for readability. Full-width chat is unreadable on wide screens.
+Chat thread height should use `calc(100vh - 280px)` to fill available viewport.
+
 ## Forbidden
 
 - Generating UPDATE/INSERT/DELETE from LLM chat output
@@ -338,3 +551,14 @@ def update_filter_options(selected_truck, selected_shipment, _r, _s):
 - Emojis or unicode symbols in any LLM system prompt
 - Hardcoded serving endpoint names without startup validation
 - `chat-store` as `Input` (not `State`) on tab-rendering callbacks
+- Single-turn LLM calls without conversation history
+- Returning bare SQL results without analysis
+- Separate "JSON classifier" and "analyst" system prompts in the same pipeline
+- A separate `_call_llm_analysis` function with its own system prompt
+- Analysis prompts that are 90% formatting instructions and 10% analysis
+- Conversation history that omits actual data rows ("returned N rows" instead of the data)
+- Including `temperature` in Claude model requests
+- Contradicting the system prompt's output format in any message (e.g. "Do not return JSON" when system says "Return strict JSON" — causes Claude to produce zero text blocks)
+- Calling `.strip()` on LLM content without first checking if it is a list (Claude content blocks)
+- Setting `wait_timeout` above 50s on Statement Execution API
+- Map dcc.Graph without an initial empty dark figure (causes white axes flash)

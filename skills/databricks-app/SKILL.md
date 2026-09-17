@@ -150,6 +150,47 @@ GRANT SELECT ON TABLE my_catalog.gold.my_table TO `<app-application-id>`;
 
 Do not grant ownership, `ALL PRIVILEGES`, Bronze/Silver access, or unrelated tables.
 
+## App resources (programmatic setup)
+
+App resources (SQL warehouse, serving endpoints) can be added programmatically via the
+Databricks SDK — do not rely on manual UI steps. This removes a manual step from deployment:
+
+```python
+from databricks.sdk import WorkspaceClient
+from databricks.sdk.service.apps import (
+    App, AppResource,
+    AppResourceSqlWarehouse, AppResourceSqlWarehouseSqlWarehousePermission,
+    AppResourceServingEndpoint, AppResourceServingEndpointServingEndpointPermission,
+)
+
+w = WorkspaceClient()
+w.apps.update(
+    name="my-app",
+    app=App(
+        name="my-app",
+        resources=[
+            AppResource(
+                name="sql-warehouse",
+                sql_warehouse=AppResourceSqlWarehouse(
+                    id="<warehouse-id>",
+                    permission=AppResourceSqlWarehouseSqlWarehousePermission.CAN_USE,
+                ),
+            ),
+            AppResource(
+                name="serving-endpoint",
+                serving_endpoint=AppResourceServingEndpoint(
+                    name="databricks-claude-sonnet-5",
+                    permission=AppResourceServingEndpointServingEndpointPermission.CAN_QUERY,
+                ),
+            ),
+        ],
+    ),
+)
+```
+
+Note: `apps.update()` takes `name` and `app` (an `App` object) — not keyword arguments
+for individual fields like `resources=`. The SDK signature is `update(name: str, app: App)`.
+
 ## Deployment workflow
 
 ```bash
@@ -168,15 +209,26 @@ to production without the required review.
    - Check imports and `requirements.txt`.
    - Confirm no query runs at module import time.
    - Confirm environment variables exist without logging their values if sensitive.
+   - Check for SDK imports that don't exist in the app runtime SDK version (e.g. `Config` is
+     not directly importable from `databricks.sdk` — use `WorkspaceClient().config` instead).
 2. Query fails
    - Confirm warehouse `CAN_USE` and UC `USE CATALOG`, `USE SCHEMA`, `SELECT`.
    - Confirm a Gold three-part table name and the configured warehouse ID.
    - Inspect structured app logs; do not expose warehouse details in the UI.
+   - Check `wait_timeout` is between 5s and 50s (not above 50s) — the Statement Execution
+     API silently rejects values outside this range with a 400.
 3. UI is blank
    - Confirm callback return types and the layer boundary.
    - Return an accessible error figure/component instead of propagating an exception.
 4. Theme is inconsistent
    - Load `@ui-ux-patterns` and use semantic tokens in both dark and light modes.
+   - When renaming COLORS dict keys, audit ALL references across all files first —
+     a missing key causes a KeyError that crashes the entire app.
+5. LLM chat fails with 400
+   - Check if the model supports `temperature` (Claude does not).
+   - Check response content format — Claude Sonnet 5+ returns a list of content blocks,
+     not a string. See @ai-chatbot skill for `_extract_text()` helper.
+   - Check the serving endpoint is not deprecated — test with a minimal payload first.
 
 ## Acceptance checklist
 
@@ -199,3 +251,8 @@ to production without the required review.
 - Raw tracebacks or credential details in the UI/logs.
 - Bronze/Silver reads in UI-facing apps.
 - `debug=True` in production.
+- `from databricks.sdk import Config` — use `WorkspaceClient().config` instead.
+- `wait_timeout` above 50s on Statement Execution API.
+- SVG logos in app assets — use PNG (SVGs are large and slow to write to workspace).
+- Deploying without testing serving endpoints first (status code AND response shape).
+- Renaming COLORS dict keys without auditing all references across all files.
