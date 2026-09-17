@@ -11,7 +11,7 @@ Language:
 App Frameworks:
 - Dash (dash + dash-bootstrap-components) for interactive web apps
 - Plotly (plotly.express, plotly.graph_objects) for all charts and visualizations
-- sqlparse for SQL formatting in chat interfaces
+- Genie Conversation API (databricks-sdk) for chat interfaces
 
 Data Access:
 - Notebooks and DLT: spark.table() for all reads
@@ -21,11 +21,11 @@ Data Access:
 - Gold layer tables only in UI-facing apps
 - Delta Lake as the table format
 
-LLM Integration:
-- Foundation Model API via requests.post to /serving-endpoints/{endpoint}/invocations
-- Auth: databricks-sdk Config().authenticate() for headers (OAuth in Apps runtime)
-- Endpoint naming: use environment variables, never hardcode — endpoints deprecate without warning
-- SQL generation: always route intent first (conversation vs data), enforce SELECT-only guardrails
+Chat / Conversational Analytics:
+- Genie Agent wrapper via databricks-sdk Conversation API (standard approach)
+- `w.genie.start_conversation_and_wait()` and `w.genie.create_message_and_wait()` for all chat
+- Genie Space ID in app.yaml env vars, no serving-endpoint resource needed
+- App service principal needs CAN_RUN on the Genie Space (grant via application_id UUID)
 
 Data Architecture:
 - Medallion: Bronze (raw ingestion) → Silver (validated, SCD Type 2) → Gold (aggregated, app-ready)
@@ -39,4 +39,4 @@ Governance:
 
 Libraries:
 - ai-dev-kit: https://github.com/databricks/ai-dev-kit
-- databricks-sdk, databricks-sql-connector, dash, dash-bootstrap-components, plotly, pandas, requests, sqlparse
+- databricks-sdk, databricks-sql-connector, dash, dash-bootstrap-components, plotly, pandas, requests

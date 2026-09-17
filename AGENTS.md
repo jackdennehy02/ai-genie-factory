@@ -56,7 +56,7 @@ Language:
 App Frameworks:
 - Dash (dash + dash-bootstrap-components) for interactive web apps
 - Plotly (plotly.express, plotly.graph_objects) for all charts and visualizations
-- sqlparse for SQL formatting in chat interfaces
+- Genie Conversation API (databricks-sdk) for chat interfaces
 
 Data Access:
 - Notebooks and DLT: spark.table() for all reads
@@ -66,11 +66,11 @@ Data Access:
 - Gold layer tables only in UI-facing apps
 - Delta Lake as the table format
 
-LLM Integration:
-- Foundation Model API via requests.post to /serving-endpoints/{endpoint}/invocations
-- Auth: databricks-sdk Config().authenticate() for headers (OAuth in Apps runtime)
-- Endpoint naming: use environment variables, never hardcode — endpoints deprecate without warning
-- SQL generation: always route intent first (conversation vs data), enforce SELECT-only guardrails
+Chat / Conversational Analytics:
+- Genie Agent wrapper via databricks-sdk Conversation API (standard approach)
+- `w.genie.start_conversation_and_wait()` and `w.genie.create_message_and_wait()` for all chat
+- Genie Space ID in app.yaml env vars, no serving-endpoint resource needed
+- App service principal needs CAN_RUN on the Genie Space (grant via application_id UUID)
 
 Data Architecture:
 - Medallion: Bronze (raw ingestion) → Silver (validated, SCD Type 2) → Gold (aggregated, app-ready)
@@ -84,7 +84,7 @@ Governance:
 
 Libraries:
 - ai-dev-kit: https://github.com/databricks/ai-dev-kit
-- databricks-sdk, databricks-sql-connector, dash, dash-bootstrap-components, plotly, pandas, requests, sqlparse
+- databricks-sdk, databricks-sql-connector, dash, dash-bootstrap-components, plotly, pandas, requests
 
 ---
 
@@ -194,121 +194,53 @@ except Exception as e:
 
 ---
 
-## LOGGING
-
-All applications must use structured logging. Never use print() for diagnostic output.
-
-Rules:
-- Every .py file must import logger from _logger.py
-- Use logger.info for normal flow milestones
-- Use logger.error for all caught exceptions (always log before raising)
-- Use logger.debug for intermediate values during development
-- Never use print() — it disappears in Databricks Apps logs; logger output is captured
-
-_logger.py (generate this file verbatim in every app):
-import logging
-
-def get_logger(name: str) -> logging.Logger:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S"
-    )
-    return logging.getLogger(name)
-
-Usage in every module (first two lines after docstring):
-from _logger import get_logger
-logger = get_logger(__name__)
-
-Log these events in data.py:
-- Before data load: logger.info(f"Loading: catalog.schema.table")
-- After data load: logger.info(f"Loaded {len(df)} rows from catalog.schema.table")  # use len(df) in Apps (pandas); df.count() in Notebooks (Spark)
-- On filter applied: logger.debug(f"Filter applied — {len(filtered_df)} rows remaining")
-- On error: logger.error(f"Data access failed: {e}")
-
-Log these events in logic.py:
-- Start of each transformation: logger.info(f"Running: <transformation name>")
-- Output row count: logger.debug(f"Result: {result.count()} rows")
-- On error: logger.error(f"Transformation failed: {e}")
-
-Log these events in app.py:
-- App start: logger.info("App starting")
-- Config loaded: logger.info(f"Config: {config}")
-
----
-
 ## AI CHATBOT
 
-All applications with an LLM-powered chat interface must follow these guardrails.
+All applications with a chat interface must use a **Genie Agent wrapper** — not a custom LLM pipeline.
 Code patterns and implementation details are in @ai-chatbot skill.
 
-Process (read this first):
-- Before writing any LLM integration code, trace the full message flow on paper: system prompt → user message → LLM response format → what happens with the response → what the user sees. Every message must be consistent with the system prompt's output format.
-- Never patch a symptom. If something doesn't work, read the FULL file, understand the complete state, then make ONE considered change. A deploy-and-check-logs loop wastes hours.
-- Before deploying, test the exact payload the app will send — from the app's service principal context, not the user's context. Test the full response shape, not just the status code.
-- When changing any shared data structure (COLORS dict keys, chat-store schema, message format), audit ALL references across ALL files first.
-
 Architecture:
-- ONE system prompt that is both analyst AND query generator — never split into a "JSON classifier" and a separate "analyst". A split architecture produces disconnected conversations, conflicting instructions, and the LLM cannot reason about data it just queried.
-- ONE continuous conversation — the LLM keeps full history (messages + data results). Follow-ups work naturally because the LLM has context of everything shown.
-- When SQL is executed, feed the results BACK into the same conversation and ask the LLM to analyse them. This is still within one logical flow, not a disconnected second call with a different system prompt.
-- The system prompt defines the LLM's ROLE (analyst who scrutinises data) with formatting as a lightweight suffix — never the other way around.
+- Wrap a Databricks Genie Agent via the Python SDK Conversation API (`start_conversation_and_wait`, `create_message_and_wait`)
+- The Genie Agent handles SQL generation, query execution, analysis, and conversation context
+- The app only renders the results in chat bubbles
+- No system prompts, no text-to-SQL, no intent routing, no Foundation Model API calls
 
-Model:
-- Preferred: databricks-claude-sonnet-5 (or highest available non-deprecated Claude Sonnet).
-- Never default to Llama or Haiku for chat — they lack the analytical depth users expect.
-- Claude models do NOT support `temperature` — omit it entirely (causes invisible 400).
-- Use only `messages` and `max_tokens` unless the model's docs confirm other params.
-- Test endpoints before committing — status code AND response shape.
+Prerequisites:
+- A Genie Agent (Genie Space) must exist over the app's data tables. If one does not exist, create it — see @databricks-genie-agents skill.
+- The app's service principal must have `CAN_RUN` on the Genie Space (grant via Permissions API using the SP's `application_id` UUID, not display name)
+- The Genie Space ID goes in `app.yaml` as an env var (`GENIE_SPACE_ID`)
+- No `serving-endpoint` resource needed — the Genie Agent uses its own warehouse
 
-Claude specifics:
-- Claude Sonnet 5+, Opus 4+ return `content` as a list of typed blocks, not a string. Always extract text blocks: `[b["text"] for b in content if b.get("type") == "text"]`.
-- Extended thinking returns ONLY reasoning blocks (zero text) when it encounters contradictory instructions. The #1 cause: system prompt says "Return strict JSON" but a later message says "Do not return JSON." NEVER contradict the system prompt's output format. If the system prompt requires JSON, ALL messages must request JSON (e.g. 'Respond as: {"type": "conversation", "response": "<analysis>"}').
-- Handle empty extraction explicitly — never let an empty string become the response.
+Data layer (data.py):
+- `genie_start_conversation(space_id, question)` — starts a new conversation, returns `{conversation_id, text, sql, description}`
+- `genie_follow_up(space_id, conversation_id, question)` — sends follow-up in existing conversation
+- `_parse_genie_message(msg)` — extracts text/sql/description from GenieMessage attachments
+- All wrapped in `try/except` raising `DataAccessError`
 
-Conversation history:
-- Every LLM call must receive full conversation history. A chatbot without memory is not a chatbot.
-- Assistant messages in history must include actual SQL results (first 20 rows as text), not just "[returned N rows]". Without data context, the LLM cannot answer follow-ups.
-- When feeding SQL results back for analysis, send ALL rows up to 100 — never artificially truncate small result sets (e.g. head(30) of 34 rows). The LLM will report "results were truncated" instead of analysing the data.
+UI layer (ui.py):
+- `chat_bubble(role, text, sql, mode)` — SMS-style bubbles, user right-aligned, Genie left-aligned
+- `render_chat_history(messages, mode)` — converts message list to bubble components
+- Use `dcc.Markdown` for Genie content, fenced SQL code blocks below analysis
 
-SQL guardrails:
-- Generated SQL must pass through enforce_select_only (SELECT/WITH only, single statement, table validation, auto-LIMIT).
-- All string interpolation into SQL must use sql_literal() escaping — never raw f-strings.
-- Never allow the chat LLM to generate UPDATE/INSERT — only dedicated writeback functions.
-- Writeback must be separated from the chat flow with its own guardrails.
+App layer (app.py):
+- Two-phase Dash callbacks for instant feedback while Genie processes
+- Phase 1: append user bubble, show "Thinking...", clear input, set `pending-q` store
+- Phase 2: triggered by `pending-q`, calls Genie API, renders response, clears `pending-q`
+- `genie-conv-id` store tracks conversation continuity (first message → start_conversation, follow-ups → create_message)
+- `chat-history` store holds flat list of `{role, text, sql}` dicts
 
-Analysis quality:
-- The system prompt should make the LLM capable of spotting anomalies — but the analysis prompt must be contextual. For straightforward questions ("longest routes", "how many delayed"), just answer the question concisely. For analytical questions ("anything unusual?", "what patterns?"), do deep scrutiny. Never force anomaly detection on every response — it makes simple answers bloated and unnatural.
-- Analysis prompts must prioritise answering the user's question. Lead with "answer my original question directly" not "examine every value". Anomaly flagging is "only if something genuinely stands out; don't force it."
-- Use markdown with **bold headers**, bullet points, and **Recommended Actions**. Keep formatting instructions lightweight — one sentence, not six.
-
-UI:
-- Chat thread container: max-width 800px, centered. Full-width is unreadable.
-- Chat bubble markdown: line-height 1.7+, letter-spacing 0.01em.
-- Chat markdown CSS: `.chat-markdown strong` in accent colour, paragraph/list spacing.
-- Map dcc.Graph: initial empty dark figure + dcc.Loading wrapper (prevents white axes flash).
-
-Platform:
-- LLM responses must never surface raw tracebacks — catch at boundary, log, show friendly error.
-- LLM call timeouts must be explicit (90s recommended).
-- Statement Execution API `wait_timeout`: 5s–50s (or 0). Above 50s → immediate 400.
-- Foundation Model endpoint testing must verify full response shape, not just status code.
+UI rules:
+- Chat thread container: max-width 800px, centered
+- Chat thread height: calc(100vh - 320px)
+- Typing indicator: simple "Thinking..." text (no fake multi-step progress)
 
 Forbidden:
-- Separate "JSON classifier" and "analyst" system prompts in the same chat pipeline.
-- Contradicting the system prompt's output format in any message ("Do not return JSON" when system says "Return strict JSON").
-- Single-turn LLM calls without conversation history.
-- Returning bare SQL results without analysis.
-- Artificially truncating result previews (e.g. head(30) of 34 rows) — the LLM reports "results were truncated" instead of analysing.
-- Forcing anomaly detection on every response regardless of the question.
-- `temperature` parameter for Claude models.
-- `.strip()` on LLM content without checking if it's a list first.
-- `from databricks.sdk import Config` — use `WorkspaceClient().config` instead.
-- `wait_timeout` above 50s.
-- Analysis prompts that are 90% formatting instructions.
-- Map dcc.Graph without an initial empty dark figure.
-- Deploy-and-check-logs patching loops — think through the full flow first.
-- Renaming COLORS dict keys or chat-store fields without auditing all references.
+- Custom LLM chat pipelines (system prompts, text-to-SQL, intent routing, Foundation Model API)
+- `serving-endpoint` resource in app.yaml for chat
+- iframe or link cards to the Genie Space (must wrap via SDK)
+- `chat-history` as `Input` (not `State`) on tab-rendering callbacks
+- Deploy-and-check-logs patching loops — think through the full flow first
+- Renaming store IDs or message format without auditing all references
 
 ---
 
@@ -325,11 +257,11 @@ exists so routing to the right skill stays reliable even without an explicit @me
 - @databricks-dashboard-colors — dashboard theme, dark/light mode, Lakeview color palette
 - @dlt-pipeline — Bronze/Silver/Gold, DLT, Auto Loader, CDC, streaming pipelines
 - @testing-scaffold — writing or reviewing tests for an App
-- @ai-chatbot — LLM chat interface, text-to-SQL, intent routing, Foundation Model API, SQL guardrails, maps with route lines, writeback with auto-refresh, chat UX patterns
+- @ai-chatbot — Genie Agent wrapper for chat interfaces, two-phase Dash callbacks, chat bubble rendering, service principal permissions, Genie Space creation
 
 Dashboards always need both @databricks-dashboard and @databricks-dashboard-colors together —
 one without the other produces a Lakeview dashboard with an unstyled or inconsistent theme.
 
 Chatbot apps always need @ai-chatbot paired with @databricks-app and @data-access —
-the chatbot skill handles LLM integration and chat UX; the app skill handles architecture;
+the chatbot skill handles Genie Agent wrapping and chat UX; the app skill handles architecture;
 the data-access skill handles Unity Catalog reads.

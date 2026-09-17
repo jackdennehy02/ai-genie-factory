@@ -11,11 +11,11 @@ exists so routing to the right skill stays reliable even without an explicit @me
 - @databricks-dashboard-colors — dashboard theme, dark/light mode, Lakeview color palette
 - @dlt-pipeline — Bronze/Silver/Gold, DLT, Auto Loader, CDC, streaming pipelines
 - @testing-scaffold — writing or reviewing tests for an App
-- @ai-chatbot — LLM chat interface, text-to-SQL, intent routing, Foundation Model API, SQL guardrails, maps with route lines, writeback with auto-refresh, chat UX patterns
+- @ai-chatbot — Genie Agent wrapper for chat interfaces, two-phase Dash callbacks, chat bubble rendering, service principal permissions, Genie Space creation
 
 Dashboards always need both @databricks-dashboard and @databricks-dashboard-colors together —
 one without the other produces a Lakeview dashboard with an unstyled or inconsistent theme.
 
 Chatbot apps always need @ai-chatbot paired with @databricks-app and @data-access —
-the chatbot skill handles LLM integration and chat UX; the app skill handles architecture;
+the chatbot skill handles Genie Agent wrapping and chat UX; the app skill handles architecture;
 the data-access skill handles Unity Catalog reads.
