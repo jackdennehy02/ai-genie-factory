@@ -508,6 +508,30 @@ Always `<extra></extra>` to suppress trace name box. Always `<b>` the value.
 
 ---
 
+## Plotly Layout Rules
+
+`base_layout()` returns a **plain dict** — never a `go.Figure` or `go.Layout` object.
+Always use `fig.update_layout(**base_layout(mode))` to apply the theme.
+
+**Never** create a temporary `go.Figure()` and unpack its `.layout` property:
+```python
+# WRONG — .layout is a Layout object, not a dict; ** unpacking throws TypeError
+fig.update_layout(**_base_figure("Title").layout)
+
+# WRONG — duplicate keyword when overriding a key already in base_layout
+fig.update_layout(**base_layout(mode), margin={"l": 8, "r": 8, "t": 48, "b": 8})
+
+# CORRECT — always unpack a dict
+fig.update_layout(**base_layout(mode))
+
+# CORRECT — override a key by mutating the dict first
+layout = base_layout(mode)
+layout["margin"] = {"l": 8, "r": 8, "t": 48, "b": 8}
+fig.update_layout(**layout)
+```
+
+---
+
 ## Forbidden
 
 - Hardcoded mode-specific colors inside components; consume semantic tokens instead
@@ -520,6 +544,9 @@ Always `<extra></extra>` to suppress trace name box. Always `<b>` the value.
 - `font-family` other than Inter or the mono fallback
 - Vertical bar charts for category labels > 8 characters
 - Hovertemplates left as Plotly default — always set explicitly
+- `**figure.layout` unpacking — `.layout` is a `go.Layout` object, not a dict; use `**base_layout()` instead
+- Passing duplicate keyword arguments to `update_layout()` (e.g. `margin` in both `**base_layout()` and as a kwarg) — mutate the dict first
+- `import dash_table` — use `from dash import dash_table` (the standalone import is deprecated)
 
 ---
 

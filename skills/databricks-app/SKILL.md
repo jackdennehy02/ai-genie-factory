@@ -19,10 +19,10 @@ my-app/
 ├── data.py             # WorkspaceClient Statement Execution reads only
 ├── logic.py            # pandas transformations and business rules only
 ├── ui.py               # Plotly figures and Dash/Streamlit components only
-├── _logger.py          # shared structured logger
 ├── app.yaml            # command and resource-backed environment variables
 ├── requirements.txt
-└── APP.md              # purpose, audience, Gold tables, filters, KPIs, acceptance criteria
+├── APP.md              # purpose, audience, Gold tables, filters, KPIs, acceptance criteria
+└── deploy_app.py       # notebook — one-click deploy: assets, resources, permissions, deploy, verify
 ```
 
 ## Rules
@@ -34,7 +34,6 @@ my-app/
 - `app.py` owns validated configuration and orchestration; it contains no SQL.
 - UI-facing reads are Gold-only and use three-part Unity Catalog names.
 - Reuse centrally defined semantic KPIs; never recalculate them in an app.
-- Import `get_logger` from `_logger.py` in every Python module; never use `print()`.
 - Catch and translate exceptions at every layer boundary. Never show raw tracebacks.
 - Every visual UI supports `alpura-dark` and `alpura-light` from `@ui-ux-patterns`.
 
@@ -47,17 +46,11 @@ Validate them during startup without opening a remote connection.
 """Application entry point and orchestration."""
 import os
 
-from _logger import get_logger
-
-logger = get_logger(__name__)
-
 CONFIG = {
     "table_name": os.environ["UC_TABLE_NAME"],
     "warehouse_id": os.environ["DATABRICKS_WAREHOUSE_ID"],
     "row_limit": int(os.environ["APP_ROW_LIMIT"]),
 }
-
-logger.info("Config loaded")
 ```
 
 Do not log secrets, tokens, connection headers, query results, or customer data.
@@ -109,20 +102,12 @@ Add only libraries actually imported. Do not add `pyspark` or `databricks-connec
 
 ```python
 # logic.py
-from _logger import get_logger
 from data import LogicError
 
-logger = get_logger(__name__)
-
-
 def build_summary(frame):
-    logger.info("Running: build_summary")
     try:
-        result = frame.groupby("region", as_index=False)["amount"].sum()
-        logger.debug(f"Result: {len(result)} rows")
-        return result
+        return frame.groupby("region", as_index=False)["amount"].sum()
     except Exception as e:
-        logger.error(f"Transformation failed: {e}")
         raise LogicError("Unable to prepare the requested summary") from e
 ```
 
@@ -133,7 +118,6 @@ try:
     summary = build_summary(raw)
     return build_chart(summary, theme_mode)
 except Exception as e:
-    logger.error(f"Dashboard update failed: {e}")
     return error_figure("Data is temporarily unavailable", theme_mode)
 ```
 
@@ -191,11 +175,166 @@ w.apps.update(
 Note: `apps.update()` takes `name` and `app` (an `App` object) — not keyword arguments
 for individual fields like `resources=`. The SDK signature is `update(name: str, app: App)`.
 
+## Logo and Static Assets
+
+The brand logo **must** be copied into the app's `assets/` directory at build time so it
+is included in the deployment snapshot. Never rely on runtime file copy (`shutil.copy2`
+from a workspace FUSE path) — the app's service principal cannot access arbitrary
+workspace directories, and the FUSE mount may not be available.
+
+```python
+# CORRECT — copy at build time (before deploy), reference as static asset
+import shutil
+from pathlib import Path
+
+LOGO_SOURCE = Path("/Workspace/Users/<user>/.assistant/brand/logo-full-colour-whitetext.png")
+APP_ASSETS  = Path("/Workspace/Users/<user>/.assistant/apps/<app-name>/assets")
+APP_ASSETS.mkdir(parents=True, exist_ok=True)
+shutil.copy2(LOGO_SOURCE, APP_ASSETS / "logo.png")
+
+# Then in app.py:
+LOGO_SRC = "/assets/logo.png"   # Dash serves assets/ directory automatically
+```
+
+```python
+# WRONG — runtime copy fails because the SP has no access to the brand folder
+def _prepare_logo_asset() -> str:
+    source = Path("/Workspace/Users/<user>/.assistant/brand/logo.png")
+    shutil.copy2(source, destination)   # fails at runtime
+```
+
 ## Deployment workflow
 
+The agent **must not** rely on CLI or `executeCode` for permission grants — safety
+guardrails block permission mutations from chat. Instead, scaffold a **deploy notebook**
+(`deploy_<app_name>.py`) in the app source directory that does **everything** in
+runnable cells under the user's identity. This notebook is the single deploy
+artifact — the user runs it once and the app is live with full permissions.
+
+### What the deploy notebook must do (in order)
+
+1. **Copy static assets** (logo PNG) into the app's `assets/` directory
+2. **Create the app** (or confirm it exists)
+3. **Start compute** if stopped
+4. **Add app resources** (SQL warehouse with CAN_USE)
+5. **Grant permissions** (Genie Space CAN_RUN, UC table SELECT, etc.)
+6. **Deploy the app** from the source code path
+7. **Verify** app status is RUNNING and print the URL
+
+### Deploy notebook template
+
+```python
+# Cell 1: Configuration
+APP_NAME = "my-app-name"
+SOURCE_PATH = "/Workspace/Users/<user>/.assistant/apps/<app-name>"
+WAREHOUSE_ID = "<warehouse-id>"
+GENIE_SPACE_ID = "<space-id>"  # omit if no chat tab
+LOGO_SOURCE = "/Workspace/Users/<user>/.assistant/brand/logo-full-colour-whitetext.png"
+```
+
+```python
+# Cell 2: Copy static assets
+import shutil
+from pathlib import Path
+
+assets_dir = Path(SOURCE_PATH) / "assets"
+assets_dir.mkdir(parents=True, exist_ok=True)
+shutil.copy2(LOGO_SOURCE, assets_dir / "logo.png")
+print(f"Logo copied to {assets_dir / 'logo.png'}")
+```
+
+```python
+# Cell 3: Create or confirm app, start compute, add resources
+from databricks.sdk import WorkspaceClient
+from databricks.sdk.service.apps import (
+    App, AppResource,
+    AppResourceSqlWarehouse, AppResourceSqlWarehouseSqlWarehousePermission,
+)
+
+w = WorkspaceClient()
+
+# Create (idempotent)
+try:
+    app = w.apps.get(APP_NAME)
+    print(f"App exists: {app.name}")
+except Exception:
+    app = w.apps.create(name=APP_NAME)
+    print(f"Created app: {app.name}")
+
+# Add warehouse resource
+w.apps.update(
+    name=APP_NAME,
+    app=App(
+        name=APP_NAME,
+        resources=[
+            AppResource(
+                name="sql-warehouse",
+                sql_warehouse=AppResourceSqlWarehouse(
+                    id=WAREHOUSE_ID,
+                    permission=AppResourceSqlWarehouseSqlWarehousePermission.CAN_USE,
+                ),
+            ),
+        ],
+    ),
+)
+print("Warehouse resource attached")
+```
+
+```python
+# Cell 4: Grant Genie Space CAN_RUN (only for chat-enabled apps)
+import requests
+
+host = w.config.host.rstrip("/")
+headers = {**w.config.authenticate(), "Content-Type": "application/json"}
+
+app = w.apps.get(APP_NAME)
+sp_name = app.service_principal_name
+sps = list(w.service_principals.list(filter=f'displayName eq "{sp_name}"'))
+app_id = sps[0].application_id
+
+resp = requests.patch(
+    f"{host}/api/2.0/permissions/genie/{GENIE_SPACE_ID}",
+    headers=headers,
+    json={"access_control_list": [{
+        "service_principal_name": app_id,
+        "permission_level": "CAN_RUN",
+    }]},
+)
+assert resp.status_code == 200, f"Permission grant failed: {resp.text}"
+print(f"Granted CAN_RUN on Genie Space to {sp_name} ({app_id})")
+```
+
+```python
+# Cell 5: Deploy
+deployment = w.apps.deploy(
+    app_name=APP_NAME,
+    source_code_path=SOURCE_PATH,
+)
+print(f"Deployed: {deployment.deployment_id} — status: {deployment.status.state.value}")
+```
+
+```python
+# Cell 6: Verify
+import time
+time.sleep(10)
+app = w.apps.get(APP_NAME)
+print(f"App status: {app.app_status.state.value}")
+print(f"Compute:   {app.compute_status.state.value}")
+print(f"URL:       {app.url}")
+```
+
+### Rules
+
+- The deploy notebook is **not optional** for chat-enabled apps — it is a required deliverable.
+- The agent creates and populates this notebook as part of the scaffold, not as a post-deploy fix.
+- The agent must **tell the user to run the notebook** rather than attempting CLI/SDK
+  permission grants from chat (which will be blocked by safety guardrails).
+- For apps without a chat tab, the deploy notebook is still recommended but the Genie
+  permission cell can be omitted.
+
 ```bash
+# Legacy CLI workflow (for reference only — prefer the deploy notebook)
 databricks apps create my-app
-databricks sync . /Workspace/Shared/apps/my-app
 databricks apps deploy my-app --source-code-path /Workspace/Shared/apps/my-app
 databricks apps get my-app
 ```
@@ -232,7 +371,7 @@ to production without the required review.
 
 ## Acceptance checklist
 
-- [ ] Five Python layers/files are present and imports flow in one direction.
+- [ ] Four app files (app.py, data.py, logic.py, ui.py) plus deploy_app.py notebook are present.
 - [ ] `data.py` is the only module containing SQL or `WorkspaceClient`.
 - [ ] Gold-only three-part names are driven by configuration.
 - [ ] No remote call runs during module import.
@@ -240,6 +379,7 @@ to production without the required review.
 - [ ] App identity has least privilege.
 - [ ] Dark and light modes meet contrast and focus requirements.
 - [ ] Production deployment is reproducible and reviewed.
+- [ ] `deploy_app.py` notebook handles assets, resources, permissions, and deploy under the user's identity.
 
 ## Forbidden
 
@@ -256,3 +396,6 @@ to production without the required review.
 - SVG logos in app assets — use PNG (SVGs are large and slow to write to workspace).
 - Deploying without testing serving endpoints first (status code AND response shape).
 - Renaming COLORS dict keys without auditing all references across all files.
+- Runtime `shutil.copy2` for logo/assets — the app SP cannot access workspace FUSE paths outside the snapshot. Copy assets into the source `assets/` directory **before** deploy.
+- Leaving logo or static file references to workspace FUSE paths (`/Workspace/Users/...`) — use `/assets/<filename>` served by Dash/Flask.
+- Depending on chat-time permission mutation for required app setup — if the app needs permissions/resources, scaffold and run `deploy_app.ipynb` under the user's identity.

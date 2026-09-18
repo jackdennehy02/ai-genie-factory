@@ -41,6 +41,7 @@ Design:
 Deployment:
 - App name: [kebab-case name for databricks apps create]
 - Warehouse: [warehouse name or ID, default: snap-dbx-sandbox-sql-wh]
+- Deploy notebook: [required for apps that need permissions/resources setup; default: deploy_app.ipynb]
 [Write "defaults" to use DEFAULT INFRASTRUCTURE from PROMPT_TEMPLATE.]
 
 Constraints:

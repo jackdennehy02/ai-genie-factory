@@ -67,8 +67,25 @@ and `text_instructions` for best results.
 
 ## Service principal permissions
 
-The app's service principal needs `CAN_RUN` on the Genie Space. The Permissions
-API requires the SP's `application_id` (UUID), not its display name:
+The app's service principal needs `CAN_RUN` on the Genie Space. **This must be
+granted as part of the automated deploy flow** — never left as a manual post-deploy
+step for the user. The Permissions API requires the SP's `application_id` (UUID),
+not its display name.
+
+### Why it must be in the deploy notebook
+
+- Agent safety guardrails **will block** `executeCode`, `runDatabricksCli`, and
+  any other chat-time tool that mutates permissions. This is not a bug — it is a
+  hard constraint of the environment.
+- A standalone `setup_permissions.py` script is a band-aid — it still requires
+  the user to manually run something after deploy, which defeats the purpose.
+- The deploy notebook (`deploy_<app_name>.py`) is a single "Run All" artifact
+  that creates the app, attaches resources, grants permissions, deploys, and
+  verifies — all in one go under the user's identity.
+- See `@databricks-app` skill → "Deployment workflow" for the full deploy
+  notebook template with all cells.
+
+### Permission grant code (goes in the deploy notebook)
 
 ```python
 import requests
@@ -78,13 +95,11 @@ w = WorkspaceClient()
 host = w.config.host.rstrip("/")
 headers = {**w.config.authenticate(), "Content-Type": "application/json"}
 
-# Get the app's service principal application_id
-app = w.apps.get("my-app-name")
+app = w.apps.get(APP_NAME)
 sp_name = app.service_principal_name
 sps = list(w.service_principals.list(filter=f'displayName eq "{sp_name}"'))
 app_id = sps[0].application_id  # UUID like "0b9286a5-..."
 
-# Grant CAN_RUN on the Genie Space
 resp = requests.patch(
     f"{host}/api/2.0/permissions/genie/{GENIE_SPACE_ID}",
     headers=headers,
@@ -93,11 +108,20 @@ resp = requests.patch(
         "permission_level": "CAN_RUN",
     }]},
 )
-assert resp.status_code == 200, resp.text
+assert resp.status_code == 200, f"Permission grant failed: {resp.text}"
+print(f"Granted CAN_RUN to {sp_name} ({app_id})")
 ```
 
 Valid Genie permission levels: `CAN_READ`, `CAN_RUN`, `CAN_EDIT`, `CAN_MANAGE`.
 Use `CAN_RUN` for app service principals (allows asking questions).
+
+### What the agent must do
+
+1. Scaffold all app source files as usual
+2. Create the deploy notebook with the Genie permission cell included
+3. Tell the user: "Run the deploy notebook to create, configure, and deploy the app"
+4. **Never** attempt the permission grant from chat — it will be blocked
+5. **Never** create a standalone permissions script — it is a dead-end workaround
 
 ## app.yaml — no serving endpoint needed
 
@@ -341,3 +365,6 @@ The `chat-history` store holds a flat list of dicts:
 - Showing fake multi-step progress indicators in Dash
 - Raw f-string interpolation of user input into SQL
 - `serving-endpoint` resource in app.yaml for chat (not needed with Genie)
+- Leaving Genie Space `CAN_RUN` permission as a manual post-deploy step — automate it in `deploy_app.ipynb`
+- Deploying a chat-enabled app without first verifying the SP has `CAN_RUN` on the Genie Space
+- Shipping a chat-enabled app without scaffolding `deploy_app.ipynb`

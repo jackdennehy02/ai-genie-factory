@@ -10,7 +10,6 @@ exists so routing to the right skill stays reliable even without an explicit @me
 - @databricks-dashboard — building or editing a native AI/BI Lakeview Dashboard
 - @databricks-dashboard-colors — dashboard theme, dark/light mode, Lakeview color palette
 - @dlt-pipeline — Bronze/Silver/Gold, DLT, Auto Loader, CDC, streaming pipelines
-- @testing-scaffold — writing or reviewing tests for an App
 - @ai-chatbot — Genie Agent wrapper for chat interfaces, two-phase Dash callbacks, chat bubble rendering, service principal permissions, Genie Space creation
 
 Dashboards always need both @databricks-dashboard and @databricks-dashboard-colors together —

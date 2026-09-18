@@ -11,7 +11,8 @@ Architecture:
 
 Prerequisites:
 - A Genie Agent (Genie Space) must exist over the app's data tables. If one does not exist, create it — see @databricks-genie-agents skill.
-- The app's service principal must have `CAN_RUN` on the Genie Space (grant via Permissions API using the SP's `application_id` UUID, not display name)
+- The app's service principal must have `CAN_RUN` on the Genie Space — **grant this automatically as part of the deploy flow**, never as a manual post-deploy step. Use the Permissions API with the SP's `application_id` UUID, not its display name.
+- The factory pattern for chat-enabled apps is a companion notebook `deploy_app.ipynb` that runs under the user's identity and performs create app → attach resources → grant Genie permissions → deploy.
 - The Genie Space ID goes in `app.yaml` as an env var (`GENIE_SPACE_ID`)
 - No `serving-endpoint` resource needed — the Genie Agent uses its own warehouse
 
@@ -45,3 +46,7 @@ Forbidden:
 - `chat-history` as `Input` (not `State`) on tab-rendering callbacks
 - Deploy-and-check-logs patching loops — think through the full flow first
 - Renaming store IDs or message format without auditing all references
+- Attempting Genie Space permission grants from chat tools (executeCode, runDatabricksCli) — safety guardrails always block it
+- Shipping a standalone `setup_permissions.py` instead of putting the grant in the deploy notebook
+- Deploying a chat-enabled app without a `deploy_<app_name>.py` notebook that includes the Genie CAN_RUN grant
+- Leaving Genie Space CAN_RUN as a manual post-deploy step for the user
